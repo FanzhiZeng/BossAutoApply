@@ -45,7 +45,23 @@ const BOSS_SELECTORS = {
   chatSendButton: ['.chat-input .send-btn', '.btn-send', '.send-message-btn'],
 
   // 一些"已沟通/继续沟通"之类的按钮文案，用来判断这个岗位是否已经打过招呼
-  alreadyChattedTextHints: ['继续沟通', '已发送', '继续聊']
+  alreadyChattedTextHints: ['继续沟通', '已发送', '继续聊'],
+
+  // 顶部搜索框：任务开始时会自动把关键词填进去并触发搜索，
+  // 这样用户不用先手动在 BOSS 页面里搜好再打开插件
+  searchInput: ['#new-search-keyword', 'input[placeholder*="搜索"]', '.search-input input', '.search-form-wrap input'],
+  searchButton: ['.search-form-wrap .search-btn', 'button.search-btn', '.btn-search'],
+
+  // 点击卡片上的"打招呼"快捷按钮后，BOSS 有时会直接用【消息通知-设置招呼语】里配置的
+  // 默认话术发送，并弹出"已向BOSS发送消息"确认框，而不是给出一个可编辑的输入框——
+  // 这种情况下我们的自定义话术不会生效，只能识别这个弹窗、确认已送达，然后关闭继续下一个。
+  autoSentDialogHints: ['已向BOSS发送消息', '已发送消息'],
+  autoSentDialogStayButtonTexts: ['留在此页'],
+  autoSentDialogContinueButtonTexts: ['继续沟通'],
+
+  // 其余可能挡住流程的通用弹窗（完善简历提示、活动弹窗等）的关闭方式
+  genericDialogCloseTexts: ['我知道了', '知道了', '关闭', '暂不', '以后再说', '取消'],
+  genericDialogCloseIconSelectors: ['.dialog-close', '.icon-close', '.close-btn', '.ui-icon-close']
 };
 
 if (typeof module !== 'undefined' && module.exports) {

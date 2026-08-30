@@ -163,6 +163,50 @@
     return SEL.alreadyChattedTextHints.some((hint) => text.includes(hint));
   }
 
+  async function performSearch(keyword) {
+    const input = await waitFor(() => queryFirst(document, SEL.searchInput), { timeout: 5000 });
+    if (!input) {
+      log('未找到页面搜索框，将直接使用当前页面已有的职位列表（如需按关键词搜索，请先手动在 BOSS 搜索框中搜索）', 'warn');
+      return false;
+    }
+
+    input.focus();
+    setNativeValue(input, keyword);
+    await sleep(300);
+
+    const searchBtn = queryFirst(document, SEL.searchButton);
+    if (searchBtn) {
+      searchBtn.click();
+    } else {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    }
+
+    const ok = await waitFor(() => getJobCards().length > 0, { timeout: 8000 });
+    if (!ok) {
+      log(`搜索「${keyword}」后未加载出职位列表，请确认关键词是否有结果`, 'warn');
+      return false;
+    }
+    await sleep(800);
+    return true;
+  }
+
+  // 清掉可能挡在流程中间的通用弹窗（完善简历提示、活动广告等）。
+  // 专门处理"已向BOSS发送消息"确认框的逻辑在 sendGreeting 里，这里只处理其余的。
+  function dismissGenericDialog() {
+    const closeBtn = findByText(document, 'button, span, a, i, div', SEL.genericDialogCloseTexts);
+    if (closeBtn) {
+      closeBtn.click();
+      return true;
+    }
+    const closeIcon = queryFirst(document, SEL.genericDialogCloseIconSelectors);
+    if (closeIcon) {
+      closeIcon.click();
+      return true;
+    }
+    return false;
+  }
+
   async function openChatForCard(card) {
     // 优先尝试卡片上直接可见的"打招呼/立即沟通"按钮
     let chatBtn = queryFirst(card, SEL.cardChatButton) || findByText(card, 'button, a, span', ['打招呼', '立即沟通', '沟通']);
@@ -183,12 +227,41 @@
     return true;
   }
 
+  function findAutoSentDialogButtons() {
+    const hasDialogText = SEL.autoSentDialogHints.some((hint) => document.body.textContent.includes(hint));
+    if (!hasDialogText) return null;
+    const stayBtn = findByText(document, 'button, span, a, div', SEL.autoSentDialogStayButtonTexts);
+    const continueBtn = findByText(document, 'button, span, a, div', SEL.autoSentDialogContinueButtonTexts);
+    if (!stayBtn && !continueBtn) return null;
+    return { stayBtn, continueBtn };
+  }
+
   async function sendGreeting(greetingText) {
-    const input = await waitFor(() => queryFirst(document, SEL.chatInput), { timeout: 6000 });
-    if (!input) {
-      return { ok: false, reason: '未找到聊天输入框（可能页面结构已变化，或该职位需要先完善简历）' };
+    // 点击"打招呼"后，BOSS 可能出现两种情况，谁先出现处理谁：
+    // 1) 一个可编辑的聊天输入框 —— 我们填入自定义话术并发送；
+    // 2) 一个"已向BOSS发送消息"确认框 —— 说明 BOSS 已经用你在官方设置里配置的
+    //    默认招呼语直接发出去了，这里的自定义话术不会生效，只能确认并关闭继续下一个。
+    const outcome = await waitFor(() => {
+      const input = queryFirst(document, SEL.chatInput);
+      if (input) return { type: 'input', input };
+      const dialog = findAutoSentDialogButtons();
+      if (dialog) return { type: 'auto-sent', dialog };
+      return null;
+    }, { timeout: 6000 });
+
+    if (!outcome) {
+      return { ok: false, reason: '未找到聊天输入框，也没有检测到发送确认弹窗（可能页面结构已变化，或该职位需要先完善简历）' };
     }
 
+    if (outcome.type === 'auto-sent') {
+      const btn = outcome.dialog.stayBtn || outcome.dialog.continueBtn;
+      await sleep(300);
+      btn.click();
+      await sleep(400);
+      return { ok: true, usedDefaultGreeting: true };
+    }
+
+    const input = outcome.input;
     setNativeValue(input, '');
     await sleep(150);
     setNativeValue(input, greetingText);
@@ -235,6 +308,17 @@
 
     log('开始自动投递任务');
 
+    if (config.keywords && config.keywords.length > 0) {
+      const searchTerm = config.keywords[0];
+      log(`自动搜索关键词「${searchTerm}」...`);
+      await performSearch(searchTerm);
+      if (state.stopRequested) {
+        state.running = false;
+        reportProgress();
+        return;
+      }
+    }
+
     const seen = await loadSeenIds();
     const maxApplications = config.maxApplications || 20;
 
@@ -254,6 +338,8 @@
 
       for (const card of freshCards) {
         if (state.stopRequested || state.appliedCount >= maxApplications) break;
+
+        dismissGenericDialog();
 
         let info;
         try {
@@ -296,7 +382,10 @@
           const result = await sendGreeting(config.greeting);
           if (result.ok) {
             state.appliedCount += 1;
-            log(`已投递《${info.title}》@${info.company}（${info.salary}）`, 'success');
+            const note = result.usedDefaultGreeting
+              ? '（该职位使用了 BOSS 自带的默认招呼语，未能填入自定义话术，可在 BOSS「消息通知-设置招呼语」里修改默认文案）'
+              : '';
+            log(`已投递《${info.title}》@${info.company}（${info.salary}）${note}`, 'success');
             seen.add(info.jobId);
             await markSeen(info.jobId);
           } else {
@@ -317,6 +406,7 @@
       if (state.stopRequested || state.appliedCount >= maxApplications) break;
 
       log('本页处理完毕，尝试翻页...');
+      dismissGenericDialog();
       const moved = await goToNextPage();
       if (!moved) {
         log('没有更多职位了，任务结束');
