@@ -98,6 +98,21 @@
     return queryAllFirst(container, SEL.jobCard);
   }
 
+  function buildJobId(href, title, company, salary) {
+    // 职位详情链接通常带有 lid / securityId 等每次搜索都会变化的追踪参数，
+    // 必须只取路径部分作为稳定 ID，否则同一个职位每次搜索都会被当成"新职位"，
+    // 导致重复打招呼。
+    if (href) {
+      try {
+        const url = new URL(href, window.location.href);
+        if (url.pathname && url.pathname !== '/') return url.pathname;
+      } catch (e) {
+        // 不是合法 URL，走兜底方案
+      }
+    }
+    return `${title}__${company}__${salary}`;
+  }
+
   function extractJobInfo(card) {
     const titleEl = queryFirst(card, SEL.jobTitle);
     const companyEl = queryFirst(card, SEL.companyName);
@@ -111,7 +126,7 @@
     const tagsText = tagsEls.map((el) => el.textContent.trim()).join(' ');
     const href = linkEl ? linkEl.getAttribute('href') : '';
 
-    const jobId = href || `${title}__${company}__${salary}`;
+    const jobId = buildJobId(href, title, company, salary);
 
     return { jobId, title, company, salary, tagsText };
   }
@@ -266,13 +281,15 @@
           continue;
         }
 
+        // 注意：只有"成功投递"或"确定要跳过"（不匹配 / 已打过招呼，见上方两处
+        // seen.add）才会把 jobId 写入已处理列表。像"没找到按钮""发送失败""
+        // 抛异常"这类偶发性技术故障不会标记为已处理，这样下次运行时会重试，
+        // 而不是因为一次页面加载慢就把这个岗位永久拉黑。
         try {
           const opened = await openChatForCard(card);
           if (!opened) {
             state.errorCount += 1;
-            log(`《${info.title}》@${info.company}：未找到打招呼按钮，跳过`, 'warn');
-            seen.add(info.jobId);
-            await markSeen(info.jobId);
+            log(`《${info.title}》@${info.company}：未找到打招呼按钮，跳过（下次会重试）`, 'warn');
             continue;
           }
 
@@ -280,17 +297,16 @@
           if (result.ok) {
             state.appliedCount += 1;
             log(`已投递《${info.title}》@${info.company}（${info.salary}）`, 'success');
+            seen.add(info.jobId);
+            await markSeen(info.jobId);
           } else {
             state.errorCount += 1;
-            log(`《${info.title}》@${info.company}：${result.reason}`, 'error');
+            log(`《${info.title}》@${info.company}：${result.reason}（下次会重试）`, 'error');
           }
         } catch (e) {
           state.errorCount += 1;
-          log(`处理《${info.title}》@${info.company} 时出错：${e.message}`, 'error');
+          log(`处理《${info.title}》@${info.company} 时出错：${e.message}（下次会重试）`, 'error');
         }
-
-        seen.add(info.jobId);
-        await markSeen(info.jobId);
 
         if (state.appliedCount >= maxApplications) break;
 
