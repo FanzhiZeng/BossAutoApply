@@ -61,7 +61,15 @@ const BOSS_SELECTORS = {
 
   // 其余可能挡住流程的通用弹窗（完善简历提示、活动弹窗等）的关闭方式
   genericDialogCloseTexts: ['我知道了', '知道了', '关闭', '暂不', '以后再说', '取消'],
-  genericDialogCloseIconSelectors: ['.dialog-close', '.icon-close', '.close-btn', '.ui-icon-close']
+  genericDialogCloseIconSelectors: ['.dialog-close', '.icon-close', '.close-btn', '.ui-icon-close'],
+
+  // 顶部"薪资待遇"筛选下拉：点开后弹出一个选项面板，选项文案形如"15-25K"。
+  // 我们会在这些选项里挑一个和用户设置的期望薪资区间重叠最多的档位并点击应用，
+  // 这样搜索结果本身就是被平台筛过的，而不是等结果出来再靠脚本二次过滤。
+  salaryFilterTriggerTexts: ['薪资待遇'],
+  filterDropdownPanel: ['.filter-panel', '.condition-panel', '.dropdown-panel', '.popover-inner', '.filter-select-dropdown'],
+  filterOptionItem: ['li', 'a', 'span.option', '.option-item'],
+  filterConfirmButtonTexts: ['确定', '确认']
 };
 
 if (typeof module !== 'undefined' && module.exports) {

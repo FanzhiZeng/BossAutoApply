@@ -13,6 +13,7 @@
 (function () {
   const SEL = window.__BOSS_SELECTORS__ || (typeof BOSS_SELECTORS !== 'undefined' ? BOSS_SELECTORS : null);
   const MATCH = typeof matchJob !== 'undefined' ? matchJob : null;
+  const PARSE_SALARY = typeof parseSalaryRange !== 'undefined' ? parseSalaryRange : null;
 
   const state = {
     running: false,
@@ -191,6 +192,54 @@
     return true;
   }
 
+  async function applySalaryFilter(minK, maxK) {
+    if (!minK && !maxK) return; // 用户没设置薪资范围，保持"不限"
+    if (!PARSE_SALARY) return;
+
+    const trigger = findByText(document, 'div, span, button, a', SEL.salaryFilterTriggerTexts);
+    if (!trigger) {
+      log('未找到"薪资待遇"筛选按钮，跳过原生筛选设置（仍会按薪资对已加载的结果做二次过滤）', 'warn');
+      return;
+    }
+
+    trigger.click();
+    await sleep(400);
+
+    const panel = await waitFor(() => queryFirst(document, SEL.filterDropdownPanel), { timeout: 3000 }) || document;
+    const optionEls = queryAllFirst(panel, SEL.filterOptionItem).filter((el) => (el.textContent || '').trim());
+
+    const lo = minK || 0;
+    const hi = maxK || Infinity;
+    let bestEl = null;
+    let bestOverlap = -Infinity;
+    for (const el of optionEls) {
+      const range = PARSE_SALARY(el.textContent.trim());
+      if (!range) continue;
+      const overlap = Math.min(range.max, hi) - Math.max(range.min, lo);
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        bestEl = el;
+      }
+    }
+
+    if (!bestEl) {
+      log('未能在薪资筛选选项里找到可解析的档位，跳过原生筛选设置', 'warn');
+      trigger.click(); // 尝试收起面板
+      return;
+    }
+
+    const chosenText = bestEl.textContent.trim();
+    bestEl.click();
+    await sleep(300);
+
+    const confirmBtn = findByText(document, 'button, span, a', SEL.filterConfirmButtonTexts);
+    if (confirmBtn) confirmBtn.click();
+
+    await sleep(600);
+    await waitFor(() => getJobCards().length > 0, { timeout: 6000 });
+    log(`已应用薪资筛选：${chosenText}`);
+  }
+
   // 清掉可能挡在流程中间的通用弹窗（完善简历提示、活动广告等）。
   // 专门处理"已向BOSS发送消息"确认框的逻辑在 sendGreeting 里，这里只处理其余的。
   function dismissGenericDialog() {
@@ -312,6 +361,15 @@
       const searchTerm = config.keywords[0];
       log(`自动搜索关键词「${searchTerm}」...`);
       await performSearch(searchTerm);
+      if (state.stopRequested) {
+        state.running = false;
+        reportProgress();
+        return;
+      }
+    }
+
+    if (config.salaryMin || config.salaryMax) {
+      await applySalaryFilter(config.salaryMin, config.salaryMax);
       if (state.stopRequested) {
         state.running = false;
         reportProgress();
