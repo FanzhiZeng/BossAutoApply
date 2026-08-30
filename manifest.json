@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "BOSS直聘自动投递助手",
+  "version": "0.1.0",
+  "description": "登录 BOSS 直聘后，一键搜索匹配职位、自动打招呼并完成投递。仅在你本地浏览器会话中运行，不采集或上传任何账号信息。",
+  "permissions": ["storage", "scripting", "activeTab"],
+  "host_permissions": ["https://www.zhipin.com/*"],
+  "background": {
+    "service_worker": "src/background/background.js"
+  },
+  "action": {
+    "default_title": "BOSS直聘自动投递助手",
+    "default_popup": "src/popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/web/geek/job*"],
+      "js": ["src/shared/selectors.js", "src/shared/matcher.js", "src/content/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

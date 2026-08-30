@@ -1,0 +1,10 @@
+{
+  "name": "boss-zhipin-auto-apply",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BOSS直聘自动投递浏览器插件：登录后自动搜索匹配职位、打招呼并完成投递",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

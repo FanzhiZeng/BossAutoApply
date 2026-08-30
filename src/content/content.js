@@ -1,0 +1,347 @@
+// content.js
+// 运行在 BOSS 直聘职位搜索页 (https://www.zhipin.com/web/geek/job*) 上，
+// 负责实际的"搜索匹配职位 -> 打招呼 -> 投递"自动化流程。
+//
+// 设计要点：
+// - 完全基于当前已登录的页面 DOM 操作，不读取、不上传任何账号 / Cookie 信息。
+// - 状态保存在本脚本内的一个模块级对象里，独立于 popup 是否打开，
+//   进度通过 chrome.runtime.sendMessage 上报给 background，
+//   popup 打开时向 background 拉取最新状态即可，即使中途关闭 popup 也不会丢进度。
+// - 所有涉及"下一步"的地方都做了轮询等待（waitFor），并且每一步都会检查
+//   是否被用户点了"停止"，保证可以及时中断。
+
+(function () {
+  const SEL = window.__BOSS_SELECTORS__ || (typeof BOSS_SELECTORS !== 'undefined' ? BOSS_SELECTORS : null);
+  const MATCH = typeof matchJob !== 'undefined' ? matchJob : null;
+
+  const state = {
+    running: false,
+    appliedCount: 0,
+    skippedCount: 0,
+    errorCount: 0,
+    log: [],
+    config: null,
+    stopRequested: false
+  };
+
+  const STORAGE_KEY_SEEN = 'ba_seen_job_ids';
+
+  function log(message, level = 'info') {
+    const entry = { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), message, level };
+    state.log.push(entry);
+    if (state.log.length > 300) state.log.shift();
+    reportProgress();
+    // eslint-disable-next-line no-console
+    console.log(`[BOSS自动投递] ${entry.time} ${message}`);
+  }
+
+  function reportProgress() {
+    chrome.runtime.sendMessage({
+      type: 'BA_PROGRESS',
+      payload: {
+        running: state.running,
+        appliedCount: state.appliedCount,
+        skippedCount: state.skippedCount,
+        errorCount: state.errorCount,
+        log: state.log.slice(-50)
+      }
+    }).catch(() => {});
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function randomDelay(minMs, maxMs) {
+    const lo = Math.max(300, minMs || 3000);
+    const hi = Math.max(lo, maxMs || 8000);
+    return lo + Math.random() * (hi - lo);
+  }
+
+  async function waitFor(conditionFn, { timeout = 8000, interval = 200 } = {}) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (state.stopRequested) return null;
+      const result = conditionFn();
+      if (result) return result;
+      await sleep(interval);
+    }
+    return null;
+  }
+
+  function queryFirst(root, selectors) {
+    for (const sel of selectors) {
+      const el = root.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function queryAllFirst(root, selectors) {
+    for (const sel of selectors) {
+      const els = root.querySelectorAll(sel);
+      if (els && els.length > 0) return Array.from(els);
+    }
+    return [];
+  }
+
+  function findByText(root, tagSelector, textIncludesList) {
+    const candidates = Array.from(root.querySelectorAll(tagSelector));
+    return candidates.find((el) => {
+      const t = (el.textContent || '').trim();
+      return textIncludesList.some((needle) => t.includes(needle));
+    }) || null;
+  }
+
+  function getJobCards() {
+    const container = queryFirst(document, SEL.jobListContainer) || document.body;
+    return queryAllFirst(container, SEL.jobCard);
+  }
+
+  function extractJobInfo(card) {
+    const titleEl = queryFirst(card, SEL.jobTitle);
+    const companyEl = queryFirst(card, SEL.companyName);
+    const salaryEl = queryFirst(card, SEL.jobSalary);
+    const tagsEls = queryAllFirst(card, SEL.jobTags);
+    const linkEl = card.querySelector('a[href]');
+
+    const title = titleEl ? titleEl.textContent.trim() : '';
+    const company = companyEl ? companyEl.textContent.trim() : '';
+    const salary = salaryEl ? salaryEl.textContent.trim() : '';
+    const tagsText = tagsEls.map((el) => el.textContent.trim()).join(' ');
+    const href = linkEl ? linkEl.getAttribute('href') : '';
+
+    const jobId = href || `${title}__${company}__${salary}`;
+
+    return { jobId, title, company, salary, tagsText };
+  }
+
+  async function loadSeenIds() {
+    const data = await chrome.storage.local.get(STORAGE_KEY_SEEN);
+    return new Set(data[STORAGE_KEY_SEEN] || []);
+  }
+
+  async function markSeen(jobId) {
+    const data = await chrome.storage.local.get(STORAGE_KEY_SEEN);
+    const list = data[STORAGE_KEY_SEEN] || [];
+    if (!list.includes(jobId)) {
+      list.push(jobId);
+      if (list.length > 5000) list.splice(0, list.length - 5000);
+      await chrome.storage.local.set({ [STORAGE_KEY_SEEN]: list });
+    }
+  }
+
+  function setNativeValue(element, value) {
+    const proto = element.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(element, value);
+    } else {
+      element.value = value;
+    }
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function isCardAlreadyChatted(card) {
+    const text = card.textContent || '';
+    return SEL.alreadyChattedTextHints.some((hint) => text.includes(hint));
+  }
+
+  async function openChatForCard(card) {
+    // 优先尝试卡片上直接可见的"打招呼/立即沟通"按钮
+    let chatBtn = queryFirst(card, SEL.cardChatButton) || findByText(card, 'button, a, span', ['打招呼', '立即沟通', '沟通']);
+
+    if (!chatBtn) {
+      // 退而求其次：点击卡片本身，唤出详情面板，再在详情面板里找按钮
+      card.scrollIntoView({ block: 'center', behavior: 'instant' });
+      card.click();
+      await sleep(600);
+      const detailRoot = document;
+      chatBtn = findByText(detailRoot, 'button, a, span', ['打招呼', '立即沟通']);
+    }
+
+    if (!chatBtn) return false;
+
+    chatBtn.scrollIntoView({ block: 'center', behavior: 'instant' });
+    chatBtn.click();
+    return true;
+  }
+
+  async function sendGreeting(greetingText) {
+    const input = await waitFor(() => queryFirst(document, SEL.chatInput), { timeout: 6000 });
+    if (!input) {
+      return { ok: false, reason: '未找到聊天输入框（可能页面结构已变化，或该职位需要先完善简历）' };
+    }
+
+    setNativeValue(input, '');
+    await sleep(150);
+    setNativeValue(input, greetingText);
+    await sleep(200);
+
+    const sendBtn = queryFirst(document, SEL.chatSendButton) || findByText(document, 'button, span, div', ['发送']);
+    if (sendBtn) {
+      sendBtn.click();
+    } else {
+      // 回退方案：模拟回车发送
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    }
+
+    return { ok: true };
+  }
+
+  async function goToNextPage() {
+    const nextBtn = queryFirst(document, SEL.nextPageButton);
+    if (!nextBtn) return false;
+    const isDisabled = nextBtn.classList.contains('disabled') || nextBtn.getAttribute('aria-disabled') === 'true';
+    if (isDisabled) return false;
+    nextBtn.scrollIntoView({ block: 'center', behavior: 'instant' });
+    nextBtn.click();
+    await sleep(1500);
+    return true;
+  }
+
+  async function runAutomation(config) {
+    if (!SEL || !MATCH) {
+      log('脚本依赖未正确加载（selectors.js / matcher.js），请检查扩展是否完整安装', 'error');
+      state.running = false;
+      reportProgress();
+      return;
+    }
+
+    state.running = true;
+    state.stopRequested = false;
+    state.config = config;
+    state.appliedCount = 0;
+    state.skippedCount = 0;
+    state.errorCount = 0;
+    state.log = [];
+
+    log('开始自动投递任务');
+
+    const seen = await loadSeenIds();
+    const maxApplications = config.maxApplications || 20;
+
+    let page = 1;
+    while (state.running && !state.stopRequested && state.appliedCount < maxApplications) {
+      const cards = getJobCards();
+      if (cards.length === 0) {
+        const found = await waitFor(() => getJobCards().length > 0, { timeout: 5000 });
+        if (!found) {
+          log('当前页面未找到职位卡片，任务结束', 'warn');
+          break;
+        }
+      }
+
+      const freshCards = getJobCards();
+      log(`第 ${page} 页：发现 ${freshCards.length} 个职位卡片`);
+
+      for (const card of freshCards) {
+        if (state.stopRequested || state.appliedCount >= maxApplications) break;
+
+        let info;
+        try {
+          info = extractJobInfo(card);
+        } catch (e) {
+          state.errorCount += 1;
+          log(`解析职位卡片失败：${e.message}`, 'error');
+          continue;
+        }
+
+        if (!info.title) continue;
+        if (seen.has(info.jobId)) continue;
+        if (isCardAlreadyChatted(card)) {
+          seen.add(info.jobId);
+          await markSeen(info.jobId);
+          continue;
+        }
+
+        const { matched, reason } = MATCH(info, config);
+        if (!matched) {
+          state.skippedCount += 1;
+          seen.add(info.jobId);
+          await markSeen(info.jobId);
+          log(`跳过《${info.title}》@${info.company}：${reason}`);
+          continue;
+        }
+
+        try {
+          const opened = await openChatForCard(card);
+          if (!opened) {
+            state.errorCount += 1;
+            log(`《${info.title}》@${info.company}：未找到打招呼按钮，跳过`, 'warn');
+            seen.add(info.jobId);
+            await markSeen(info.jobId);
+            continue;
+          }
+
+          const result = await sendGreeting(config.greeting);
+          if (result.ok) {
+            state.appliedCount += 1;
+            log(`已投递《${info.title}》@${info.company}（${info.salary}）`, 'success');
+          } else {
+            state.errorCount += 1;
+            log(`《${info.title}》@${info.company}：${result.reason}`, 'error');
+          }
+        } catch (e) {
+          state.errorCount += 1;
+          log(`处理《${info.title}》@${info.company} 时出错：${e.message}`, 'error');
+        }
+
+        seen.add(info.jobId);
+        await markSeen(info.jobId);
+
+        if (state.appliedCount >= maxApplications) break;
+
+        const delay = randomDelay(config.minDelayMs, config.maxDelayMs);
+        await sleep(delay);
+      }
+
+      if (state.stopRequested || state.appliedCount >= maxApplications) break;
+
+      log('本页处理完毕，尝试翻页...');
+      const moved = await goToNextPage();
+      if (!moved) {
+        log('没有更多职位了，任务结束');
+        break;
+      }
+      page += 1;
+      await sleep(1500);
+    }
+
+    state.running = false;
+    log(`任务结束，共投递 ${state.appliedCount} 个职位，跳过 ${state.skippedCount} 个，${state.errorCount} 个异常`);
+    reportProgress();
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === 'BA_START') {
+      if (state.running) {
+        sendResponse({ ok: false, reason: '任务已在运行中' });
+        return true;
+      }
+      runAutomation(message.config);
+      sendResponse({ ok: true });
+      return true;
+    }
+    if (message.type === 'BA_STOP') {
+      state.stopRequested = true;
+      state.running = false;
+      log('收到停止指令，正在结束当前任务...', 'warn');
+      sendResponse({ ok: true });
+      return true;
+    }
+    if (message.type === 'BA_GET_STATE') {
+      sendResponse({
+        running: state.running,
+        appliedCount: state.appliedCount,
+        skippedCount: state.skippedCount,
+        errorCount: state.errorCount,
+        log: state.log.slice(-50)
+      });
+      return true;
+    }
+    return false;
+  });
+})();
