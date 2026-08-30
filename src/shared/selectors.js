@@ -69,7 +69,12 @@ const BOSS_SELECTORS = {
   salaryFilterTriggerTexts: ['薪资待遇'],
   filterDropdownPanel: ['.filter-panel', '.condition-panel', '.dropdown-panel', '.popover-inner', '.filter-select-dropdown'],
   filterOptionItem: ['li', 'a', 'span.option', '.option-item'],
-  filterConfirmButtonTexts: ['确定', '确认']
+  filterConfirmButtonTexts: ['确定', '确认'],
+
+  // 同样是顶部筛选下拉，用精确/包含文本匹配来选中对应选项（不像薪资那样需要按数值区间挑档位）
+  jobTypeFilterTriggerTexts: ['求职类型'],
+  experienceFilterTriggerTexts: ['工作经验'],
+  degreeFilterTriggerTexts: ['学历要求']
 };
 
 if (typeof module !== 'undefined' && module.exports) {

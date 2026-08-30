@@ -13,6 +13,9 @@ const els = {
   excludeCompanies: document.getElementById('excludeCompanies'),
   salaryMin: document.getElementById('salaryMin'),
   salaryMax: document.getElementById('salaryMax'),
+  jobType: document.getElementById('jobType'),
+  experience: document.getElementById('experience'),
+  degree: document.getElementById('degree'),
   greeting: document.getElementById('greeting'),
   maxApplications: document.getElementById('maxApplications'),
   minDelay: document.getElementById('minDelay'),
@@ -42,6 +45,9 @@ function readConfigFromForm() {
     excludeCompanies: splitList(els.excludeCompanies.value),
     salaryMin: Number(els.salaryMin.value) || 0,
     salaryMax: Number(els.salaryMax.value) || 0,
+    jobType: els.jobType.value,
+    experience: els.experience.value,
+    degree: els.degree.value,
     greeting: els.greeting.value.trim() || DEFAULT_GREETING,
     maxApplications: Math.min(200, Math.max(1, Number(els.maxApplications.value) || 20)),
     minDelayMs: Math.max(1000, (Number(els.minDelay.value) || 3) * 1000),
@@ -56,6 +62,9 @@ function writeConfigToForm(config) {
   els.excludeCompanies.value = (config.excludeCompanies || []).join(', ');
   els.salaryMin.value = config.salaryMin || '';
   els.salaryMax.value = config.salaryMax || '';
+  els.jobType.value = config.jobType || '';
+  els.experience.value = config.experience || '';
+  els.degree.value = config.degree || '';
   els.greeting.value = config.greeting || DEFAULT_GREETING;
   els.maxApplications.value = config.maxApplications || 20;
   els.minDelay.value = (config.minDelayMs || 3000) / 1000;

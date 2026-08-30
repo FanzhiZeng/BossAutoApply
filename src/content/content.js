@@ -240,6 +240,42 @@
     log(`已应用薪资筛选：${chosenText}`);
   }
 
+  async function selectDropdownFilterByText(triggerTexts, desiredText, filterLabel) {
+    if (!desiredText) return; // "不限"，不调整
+
+    const trigger = findByText(document, 'div, span, button, a', triggerTexts);
+    if (!trigger) {
+      log(`未找到"${filterLabel}"筛选按钮，跳过`, 'warn');
+      return;
+    }
+
+    trigger.click();
+    await sleep(400);
+
+    const panel = await waitFor(() => queryFirst(document, SEL.filterDropdownPanel), { timeout: 3000 }) || document;
+    const optionEls = queryAllFirst(panel, SEL.filterOptionItem).filter((el) => (el.textContent || '').trim());
+
+    const target =
+      optionEls.find((el) => el.textContent.trim() === desiredText) ||
+      optionEls.find((el) => el.textContent.trim().includes(desiredText));
+
+    if (!target) {
+      log(`"${filterLabel}"筛选选项里没有找到「${desiredText}」，跳过（可能选项文案与页面实际不一致，可在 selectors.js 里核对）`, 'warn');
+      trigger.click();
+      return;
+    }
+
+    target.click();
+    await sleep(300);
+
+    const confirmBtn = findByText(document, 'button, span, a', SEL.filterConfirmButtonTexts);
+    if (confirmBtn) confirmBtn.click();
+
+    await sleep(600);
+    await waitFor(() => getJobCards().length > 0, { timeout: 6000 });
+    log(`已应用"${filterLabel}"筛选：${desiredText}`);
+  }
+
   // 清掉可能挡在流程中间的通用弹窗（完善简历提示、活动广告等）。
   // 专门处理"已向BOSS发送消息"确认框的逻辑在 sendGreeting 里，这里只处理其余的。
   function dismissGenericDialog() {
@@ -375,6 +411,15 @@
         reportProgress();
         return;
       }
+    }
+
+    await selectDropdownFilterByText(SEL.jobTypeFilterTriggerTexts, config.jobType, '求职类型');
+    await selectDropdownFilterByText(SEL.experienceFilterTriggerTexts, config.experience, '工作经验');
+    await selectDropdownFilterByText(SEL.degreeFilterTriggerTexts, config.degree, '学历要求');
+    if (state.stopRequested) {
+      state.running = false;
+      reportProgress();
+      return;
     }
 
     const seen = await loadSeenIds();
