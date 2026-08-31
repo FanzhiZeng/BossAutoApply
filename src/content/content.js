@@ -159,6 +159,49 @@
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  // 逐字符"打字"，而不是一次性把整段文字塞进输入框，这样在页面上能看到文字
+  // 一个字一个字冒出来，也顺带让单次操作耗时更接近真人手速。
+  async function typeLikeHuman(element, text) {
+    setNativeValue(element, '');
+    await sleep(randomDelay(200, 400));
+    let current = '';
+    for (const ch of text) {
+      if (state.stopRequested) return;
+      current += ch;
+      setNativeValue(element, current);
+      await sleep(30 + Math.random() * 70);
+    }
+    await sleep(randomDelay(300, 600));
+  }
+
+  // 给即将点击的元素画一圈短暂的高亮框，方便肉眼看到插件正在点哪个按钮。
+  function highlightElement(el, duration = 900) {
+    if (!el || !el.style) return;
+    const prevOutline = el.style.outline;
+    const prevOffset = el.style.outlineOffset;
+    el.style.outline = '2px solid #ff4757';
+    el.style.outlineOffset = '2px';
+    setTimeout(() => {
+      el.style.outline = prevOutline;
+      el.style.outlineOffset = prevOffset;
+    }, duration);
+  }
+
+  // 统一的"人类式点击"：平滑滚动到元素可见位置，停顿一下，高亮，再停顿一下，
+  // 最后才点击——让每一步操作在页面上都清晰可辨，而不是瞬间完成看不出发生了什么。
+  async function humanClick(el) {
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    await sleep(randomDelay(400, 900));
+    if (state.stopRequested) return false;
+    highlightElement(el);
+    await sleep(randomDelay(250, 600));
+    if (state.stopRequested) return false;
+    el.click();
+    await sleep(randomDelay(200, 500));
+    return true;
+  }
+
   function isCardAlreadyChatted(card) {
     const text = card.textContent || '';
     return SEL.alreadyChattedTextHints.some((hint) => text.includes(hint));
@@ -171,14 +214,15 @@
       return false;
     }
 
+    await humanClick(input);
     input.focus();
-    setNativeValue(input, keyword);
-    await sleep(300);
+    await typeLikeHuman(input, keyword);
 
     const searchBtn = queryFirst(document, SEL.searchButton);
     if (searchBtn) {
-      searchBtn.click();
+      await humanClick(searchBtn);
     } else {
+      await sleep(randomDelay(200, 500));
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
       input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
     }
@@ -202,8 +246,7 @@
       return;
     }
 
-    trigger.click();
-    await sleep(400);
+    await humanClick(trigger);
 
     const panel = await waitFor(() => queryFirst(document, SEL.filterDropdownPanel), { timeout: 3000 }) || document;
     const optionEls = queryAllFirst(panel, SEL.filterOptionItem).filter((el) => (el.textContent || '').trim());
@@ -224,18 +267,16 @@
 
     if (!bestEl) {
       log('未能在薪资筛选选项里找到可解析的档位，跳过原生筛选设置', 'warn');
-      trigger.click(); // 尝试收起面板
+      await humanClick(trigger); // 尝试收起面板
       return;
     }
 
     const chosenText = bestEl.textContent.trim();
-    bestEl.click();
-    await sleep(300);
+    await humanClick(bestEl);
 
     const confirmBtn = findByText(document, 'button, span, a', SEL.filterConfirmButtonTexts);
-    if (confirmBtn) confirmBtn.click();
+    if (confirmBtn) await humanClick(confirmBtn);
 
-    await sleep(600);
     await waitFor(() => getJobCards().length > 0, { timeout: 6000 });
     log(`已应用薪资筛选：${chosenText}`);
   }
@@ -249,8 +290,7 @@
       return;
     }
 
-    trigger.click();
-    await sleep(400);
+    await humanClick(trigger);
 
     const panel = await waitFor(() => queryFirst(document, SEL.filterDropdownPanel), { timeout: 3000 }) || document;
     const optionEls = queryAllFirst(panel, SEL.filterOptionItem).filter((el) => (el.textContent || '').trim());
@@ -261,32 +301,30 @@
 
     if (!target) {
       log(`"${filterLabel}"筛选选项里没有找到「${desiredText}」，跳过（可能选项文案与页面实际不一致，可在 selectors.js 里核对）`, 'warn');
-      trigger.click();
+      await humanClick(trigger);
       return;
     }
 
-    target.click();
-    await sleep(300);
+    await humanClick(target);
 
     const confirmBtn = findByText(document, 'button, span, a', SEL.filterConfirmButtonTexts);
-    if (confirmBtn) confirmBtn.click();
+    if (confirmBtn) await humanClick(confirmBtn);
 
-    await sleep(600);
     await waitFor(() => getJobCards().length > 0, { timeout: 6000 });
     log(`已应用"${filterLabel}"筛选：${desiredText}`);
   }
 
   // 清掉可能挡在流程中间的通用弹窗（完善简历提示、活动广告等）。
   // 专门处理"已向BOSS发送消息"确认框的逻辑在 sendGreeting 里，这里只处理其余的。
-  function dismissGenericDialog() {
+  async function dismissGenericDialog() {
     const closeBtn = findByText(document, 'button, span, a, i, div', SEL.genericDialogCloseTexts);
     if (closeBtn) {
-      closeBtn.click();
+      await humanClick(closeBtn);
       return true;
     }
     const closeIcon = queryFirst(document, SEL.genericDialogCloseIconSelectors);
     if (closeIcon) {
-      closeIcon.click();
+      await humanClick(closeIcon);
       return true;
     }
     return false;
@@ -298,17 +336,15 @@
 
     if (!chatBtn) {
       // 退而求其次：点击卡片本身，唤出详情面板，再在详情面板里找按钮
-      card.scrollIntoView({ block: 'center', behavior: 'instant' });
-      card.click();
-      await sleep(600);
+      await humanClick(card);
+      await sleep(randomDelay(400, 800));
       const detailRoot = document;
       chatBtn = findByText(detailRoot, 'button, a, span', ['打招呼', '立即沟通']);
     }
 
     if (!chatBtn) return false;
 
-    chatBtn.scrollIntoView({ block: 'center', behavior: 'instant' });
-    chatBtn.click();
+    await humanClick(chatBtn);
     return true;
   }
 
@@ -340,23 +376,20 @@
 
     if (outcome.type === 'auto-sent') {
       const btn = outcome.dialog.stayBtn || outcome.dialog.continueBtn;
-      await sleep(300);
-      btn.click();
-      await sleep(400);
+      await humanClick(btn);
       return { ok: true, usedDefaultGreeting: true };
     }
 
     const input = outcome.input;
-    setNativeValue(input, '');
-    await sleep(150);
-    setNativeValue(input, greetingText);
-    await sleep(200);
+    await humanClick(input);
+    await typeLikeHuman(input, greetingText);
 
     const sendBtn = queryFirst(document, SEL.chatSendButton) || findByText(document, 'button, span, div', ['发送']);
     if (sendBtn) {
-      sendBtn.click();
+      await humanClick(sendBtn);
     } else {
       // 回退方案：模拟回车发送
+      await sleep(randomDelay(200, 500));
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
       input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
     }
@@ -369,8 +402,7 @@
     if (!nextBtn) return false;
     const isDisabled = nextBtn.classList.contains('disabled') || nextBtn.getAttribute('aria-disabled') === 'true';
     if (isDisabled) return false;
-    nextBtn.scrollIntoView({ block: 'center', behavior: 'instant' });
-    nextBtn.click();
+    await humanClick(nextBtn);
     await sleep(1500);
     return true;
   }
@@ -442,7 +474,7 @@
       for (const card of freshCards) {
         if (state.stopRequested || state.appliedCount >= maxApplications) break;
 
-        dismissGenericDialog();
+        await dismissGenericDialog();
 
         let info;
         try {
@@ -509,7 +541,7 @@
       if (state.stopRequested || state.appliedCount >= maxApplications) break;
 
       log('本页处理完毕，尝试翻页...');
-      dismissGenericDialog();
+      await dismissGenericDialog();
       const moved = await goToNextPage();
       if (!moved) {
         log('没有更多职位了，任务结束');
